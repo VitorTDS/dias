@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://www.gstatic.com; style-src 'self' 'unsafe-inline'; connect-src 'self' https://*.firebaseio.com wss://*.firebaseio.com https://*.googleapis.com; img-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'" />
   <title>Dias Sem Acidente</title>
   <style>
     :root {
@@ -172,6 +173,22 @@
     .btn.danger {
       background: var(--danger);
       box-shadow: 0 10px 22px rgba(224, 88, 10, 0.2);
+    }
+
+    .btn:disabled,
+    input:disabled {
+      cursor: not-allowed;
+      opacity: 0.58;
+      transform: none;
+    }
+
+    .btn:disabled:hover {
+      background: var(--primary);
+      transform: none;
+    }
+
+    .btn.secondary:disabled:hover {
+      background: var(--surface);
     }
 
     .hero {
@@ -504,6 +521,7 @@
       min-height: calc(100vh - 68px);
       align-content: center;
       text-align: center;
+      padding-top: clamp(84px, 8vw, 112px);
     }
 
     body.tv-mode .stats-grid {
@@ -513,6 +531,31 @@
 
     body.tv-mode .days-number {
       font-size: clamp(8rem, 24vw, 20rem);
+    }
+
+    .tv-return-btn {
+      display: none;
+    }
+
+    body.tv-mode .tv-return-btn {
+      display: inline-flex;
+      position: absolute;
+      top: clamp(18px, 2.5vw, 30px);
+      right: clamp(18px, 2.5vw, 30px);
+      width: auto;
+      min-width: 0;
+      min-height: 46px;
+      padding-inline: 20px;
+      justify-content: center;
+      align-items: center;
+      border-color: rgba(243, 112, 33, 0.25);
+      background: rgba(255, 255, 255, 0.94);
+      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.08);
+      z-index: 2;
+    }
+
+    body.dark.tv-mode .tv-return-btn {
+      background: rgba(48, 48, 48, 0.94);
     }
 
     @media (max-width: 900px) {
@@ -624,6 +667,12 @@
         grid-template-columns: 1fr;
       }
 
+      body.tv-mode .tv-return-btn {
+        left: 16px;
+        right: 16px;
+        width: auto;
+      }
+
       .pill {
         width: fit-content;
       }
@@ -692,12 +741,13 @@
         <button class="btn secondary" type="button" id="darkModeBtn">Modo escuro</button>
         <button class="btn secondary" type="button" id="tvModeBtn">Painel TV</button>
         <button class="btn secondary" type="button" id="printBtn">Exportar PDF</button>
-        <button class="btn secondary" type="button" id="csvBtn">Exportar Excel</button>
+        <button class="btn secondary" type="button" id="adminBtn">Entrar admin</button>
       </div>
     </header>
 
     <section class="hero" aria-label="Resumo de dias sem acidentes">
       <article class="panel counter-panel">
+        <button class="btn secondary tv-return-btn" type="button" id="tvReturnBtn">Voltar para tela principal</button>
         <div class="status-label"><span class="status-dot"></span> Segurança ativa</div>
         <div class="days-number" id="daysWithoutAccidents">0</div>
         <h2 class="days-title">dias sem acidentes</h2>
@@ -790,7 +840,10 @@
   <script>
     const STORAGE_KEY = 'diasSemAcidenteConfig';
     const HISTORY_KEY = 'diasSemAcidenteHistorico';
+    const ADMIN_SESSION_KEY = 'diasSemAcidenteAdmin';
     const MS_PER_DAY = 24 * 60 * 60 * 1000;
+    const MAX_GOAL_DAYS = 10000;
+    const MAX_HISTORY_ITEMS = 500;
     let remoteRef = null;
     let applyingRemoteState = false;
 
@@ -812,8 +865,18 @@
       yearsDisplay: document.getElementById('yearsDisplay'),
       darkModeBtn: document.getElementById('darkModeBtn'),
       tvModeBtn: document.getElementById('tvModeBtn'),
+      tvReturnBtn: document.getElementById('tvReturnBtn'),
+      adminBtn: document.getElementById('adminBtn'),
       syncStatus: document.getElementById('syncStatus')
     };
+
+    const adminControls = [
+      document.getElementById('saveSettingsBtn'),
+      document.getElementById('registerAccidentBtn'),
+      document.getElementById('clearHistoryBtn'),
+      elements.lastAccidentDate,
+      elements.goalDays
+    ];
 
     function getTodayISO() {
       const today = new Date();
@@ -826,41 +889,125 @@
       return new Date(year, month - 1, day);
     }
 
+    function isValidISODate(value) {
+      const text = String(value);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return false;
+      const parsed = parseLocalDate(text);
+      return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === text;
+    }
+
     function formatDate(isoDate) {
-      if (!isoDate) return '--/--/----';
+      if (!isValidISODate(isoDate)) return '--/--/----';
       return parseLocalDate(isoDate).toLocaleDateString('pt-BR');
     }
 
-    function loadConfig() {
-      const fallback = {
+    function getFallbackConfig() {
+      return {
         lastAccidentDate: getTodayISO(),
         goalDays: 365,
         darkMode: false,
         tvMode: false
       };
+    }
 
+    function normalizeConfig(rawConfig) {
+      const fallback = getFallbackConfig();
+      const source = rawConfig && typeof rawConfig === 'object' ? rawConfig : {};
+      const today = getTodayISO();
+      const selectedDate = isValidISODate(source.lastAccidentDate) ? source.lastAccidentDate : fallback.lastAccidentDate;
+      const goalDays = Math.min(MAX_GOAL_DAYS, Math.max(1, Math.floor(Number(source.goalDays) || fallback.goalDays)));
+
+      return {
+        lastAccidentDate: selectedDate > today ? today : selectedDate,
+        goalDays,
+        darkMode: Boolean(source.darkMode),
+        tvMode: Boolean(source.tvMode)
+      };
+    }
+
+    function normalizeHistory(rawHistory) {
+      if (!Array.isArray(rawHistory)) return [];
+
+      return rawHistory
+        .filter((item) => item && typeof item === 'object')
+        .map((item) => ({
+          date: isValidISODate(item.date) ? item.date : null,
+          recordedAt: Number.isNaN(new Date(item.recordedAt).getTime()) ? null : new Date(item.recordedAt).toISOString()
+        }))
+        .filter((item) => item.date && item.recordedAt)
+        .sort((a, b) => b.recordedAt.localeCompare(a.recordedAt))
+        .slice(0, MAX_HISTORY_ITEMS);
+    }
+
+    function isAdminUnlocked() {
+      return sessionStorage.getItem(ADMIN_SESSION_KEY) === 'true';
+    }
+
+    async function hashText(text) {
+      const buffer = new TextEncoder().encode(text);
+      const digest = await crypto.subtle.digest('SHA-256', buffer);
+      return [...new Uint8Array(digest)]
+        .map((byte) => byte.toString(16).padStart(2, '0'))
+        .join('');
+    }
+
+    async function unlockAdmin() {
+      if (isAdminUnlocked()) {
+        sessionStorage.removeItem(ADMIN_SESSION_KEY);
+        render();
+        return false;
+      }
+
+      const sharedConfig = window.SOBRAL_SHARED_CONFIG || {};
+      const expectedHash = sharedConfig.adminPasscodeHash;
+
+      if (!expectedHash) {
+        if (!confirm('Modo admin sem senha configurada. Continuar nesta sessao?')) return false;
+        sessionStorage.setItem(ADMIN_SESSION_KEY, 'true');
+        render();
+        return true;
+      }
+
+      const passcode = prompt('Senha de administrador');
+      if (!passcode) return false;
+
+      if (await hashText(passcode) !== expectedHash) {
+        alert('Senha de administrador invalida.');
+        return false;
+      }
+
+      sessionStorage.setItem(ADMIN_SESSION_KEY, 'true');
+      render();
+      return true;
+    }
+
+    async function requireAdmin() {
+      return isAdminUnlocked() || unlockAdmin();
+    }
+
+    function loadConfig() {
       try {
-        return { ...fallback, ...JSON.parse(localStorage.getItem(STORAGE_KEY)) };
+        return normalizeConfig(JSON.parse(localStorage.getItem(STORAGE_KEY)));
       } catch (error) {
-        return fallback;
+        return getFallbackConfig();
       }
     }
 
     function saveConfig(config) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(normalizeConfig(config)));
       saveRemoteState();
     }
 
     function loadHistory() {
       try {
-        return JSON.parse(localStorage.getItem(HISTORY_KEY)) || [];
+        return normalizeHistory(JSON.parse(localStorage.getItem(HISTORY_KEY)));
       } catch (error) {
         return [];
       }
     }
 
     function saveHistory(history) {
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(normalizeHistory(history)));
       saveRemoteState();
     }
 
@@ -871,8 +1018,8 @@
 
     function getState() {
       return {
-        config: loadConfig(),
-        history: loadHistory(),
+        config: normalizeConfig(loadConfig()),
+        history: normalizeHistory(loadHistory()),
         updatedAt: new Date().toISOString()
       };
     }
@@ -881,13 +1028,8 @@
       if (!state || typeof state !== 'object') return;
       applyingRemoteState = true;
 
-      if (state.config) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(state.config));
-      }
-
-      if (Array.isArray(state.history)) {
-        localStorage.setItem(HISTORY_KEY, JSON.stringify(state.history));
-      }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(normalizeConfig(state.config)));
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(normalizeHistory(state.history)));
 
       applyingRemoteState = false;
       render();
@@ -895,6 +1037,7 @@
 
     function saveRemoteState() {
       if (!remoteRef || applyingRemoteState) return;
+      if (!isAdminUnlocked()) return;
       remoteRef.set(getState()).catch(() => {
         setSyncStatus('Sem conexão com dados compartilhados');
       });
@@ -952,24 +1095,33 @@
 
     function renderHistory() {
       const history = loadHistory();
+      elements.historyList.replaceChildren();
 
       if (!history.length) {
-        elements.historyList.innerHTML = '<div class="empty">Nenhum acidente registrado no histórico.</div>';
+        const empty = document.createElement('div');
+        empty.className = 'empty';
+        empty.textContent = 'Nenhum acidente registrado no histórico.';
+        elements.historyList.append(empty);
         return;
       }
 
-      elements.historyList.innerHTML = history
-        .sort((a, b) => b.recordedAt.localeCompare(a.recordedAt))
-        .map((item) => `
-          <div class="history-item">
-            <div>
-              <strong>Acidente registrado em ${formatDate(item.date)}</strong>
-              <span>Lançamento feito em ${new Date(item.recordedAt).toLocaleString('pt-BR')}</span>
-            </div>
-            <span class="pill">Contagem reiniciada</span>
-          </div>
-        `)
-        .join('');
+      history.forEach((item) => {
+        const historyItem = document.createElement('div');
+        const content = document.createElement('div');
+        const title = document.createElement('strong');
+        const meta = document.createElement('span');
+        const pill = document.createElement('span');
+
+        historyItem.className = 'history-item';
+        pill.className = 'pill';
+        title.textContent = `Acidente registrado em ${formatDate(item.date)}`;
+        meta.textContent = `Lançamento feito em ${new Date(item.recordedAt).toLocaleString('pt-BR')}`;
+        pill.textContent = 'Contagem reiniciada';
+
+        content.append(title, meta);
+        historyItem.append(content, pill);
+        elements.historyList.append(historyItem);
+      });
     }
 
     function render() {
@@ -984,6 +1136,10 @@
       document.body.classList.toggle('tv-mode', Boolean(config.tvMode));
       elements.darkModeBtn.textContent = config.darkMode ? 'Modo claro' : 'Modo escuro';
       elements.tvModeBtn.textContent = config.tvMode ? 'Sair do Painel TV' : 'Painel TV';
+      elements.adminBtn.textContent = isAdminUnlocked() ? 'Sair admin' : 'Entrar admin';
+      adminControls.forEach((control) => {
+        control.disabled = !isAdminUnlocked();
+      });
 
       elements.lastAccidentDate.value = config.lastAccidentDate;
       elements.goalDays.value = goal;
@@ -1005,10 +1161,15 @@
       renderHistory();
     }
 
-    function updateSettings() {
+    async function updateSettings() {
+      if (!await requireAdmin()) {
+        render();
+        return;
+      }
+
       const config = loadConfig();
       const selectedDate = elements.lastAccidentDate.value || getTodayISO();
-      const goal = Math.max(1, Number(elements.goalDays.value) || 365);
+      const goal = Math.min(MAX_GOAL_DAYS, Math.max(1, Math.floor(Number(elements.goalDays.value) || 365)));
 
       config.lastAccidentDate = selectedDate > getTodayISO() ? getTodayISO() : selectedDate;
       config.goalDays = goal;
@@ -1016,7 +1177,9 @@
       render();
     }
 
-    function registerAccident() {
+    async function registerAccident() {
+      if (!await requireAdmin()) return;
+
       const today = getTodayISO();
       const config = loadConfig();
       const history = loadHistory();
@@ -1032,36 +1195,19 @@
       render();
     }
 
-    function exportHistoryToCsv() {
-      const history = loadHistory();
-      const header = ['Data do acidente', 'Registrado em'];
-      const rows = history.map((item) => [
-        formatDate(item.date),
-        new Date(item.recordedAt).toLocaleString('pt-BR')
-      ]);
-      const csv = [header, ...rows]
-        .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(';'))
-        .join('\n');
-      const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-
-      link.href = url;
-      link.download = 'historico-acidentes.csv';
-      link.click();
-      URL.revokeObjectURL(url);
-    }
-
     document.getElementById('saveSettingsBtn').addEventListener('click', updateSettings);
     document.getElementById('registerAccidentBtn').addEventListener('click', registerAccident);
     document.getElementById('printBtn').addEventListener('click', () => window.print());
-    document.getElementById('csvBtn').addEventListener('click', exportHistoryToCsv);
-    document.getElementById('clearHistoryBtn').addEventListener('click', () => {
+    document.getElementById('clearHistoryBtn').addEventListener('click', async () => {
+      if (!await requireAdmin()) return;
+
       if (confirm('Deseja limpar todo o histórico de acidentes?')) {
         saveHistory([]);
         render();
       }
     });
+
+    elements.adminBtn.addEventListener('click', unlockAdmin);
 
     elements.darkModeBtn.addEventListener('click', () => {
       const config = loadConfig();
@@ -1073,6 +1219,13 @@
     elements.tvModeBtn.addEventListener('click', () => {
       const config = loadConfig();
       config.tvMode = !config.tvMode;
+      saveConfig(config);
+      render();
+    });
+
+    elements.tvReturnBtn.addEventListener('click', () => {
+      const config = loadConfig();
+      config.tvMode = false;
       saveConfig(config);
       render();
     });
