@@ -1180,6 +1180,8 @@
     async function registerAccident() {
       if (!await requireAdmin()) return;
 
+      if (!confirm('Confirma o registro de um acidente hoje? Isso vai zerar a contagem de dias sem acidentes.')) return;
+
       const today = getTodayISO();
       const config = loadConfig();
       const history = loadHistory();
