@@ -458,6 +458,27 @@
       background: rgba(243, 112, 33, 0.16);
     }
 
+    .history-item-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .history-item-edit {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .btn.small {
+      min-height: 34px;
+      padding: 0 12px;
+      font-size: 0.85rem;
+    }
+
     .empty {
       color: var(--muted);
       padding: 18px;
@@ -849,6 +870,7 @@
     const MAX_HISTORY_ITEMS = 500;
     let remoteRef = null;
     let applyingRemoteState = false;
+    let editingHistoryId = null;
 
     const elements = {
       days: document.getElementById('daysWithoutAccidents'),
@@ -929,12 +951,18 @@
       };
     }
 
+    function generateId() {
+      if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+      return `h-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    }
+
     function normalizeHistory(rawHistory) {
       if (!Array.isArray(rawHistory)) return [];
 
       return rawHistory
         .filter((item) => item && typeof item === 'object')
         .map((item) => ({
+          id: typeof item.id === 'string' && item.id ? item.id : generateId(),
           date: isValidISODate(item.date) ? item.date : null,
           recordedAt: Number.isNaN(new Date(item.recordedAt).getTime()) ? null : new Date(item.recordedAt).toISOString()
         }))
@@ -958,6 +986,7 @@
     async function unlockAdmin() {
       if (isAdminUnlocked()) {
         sessionStorage.removeItem(ADMIN_SESSION_KEY);
+        editingHistoryId = null;
         render();
         return false;
       }
@@ -1109,23 +1138,116 @@
         return;
       }
 
+      const adminUnlocked = isAdminUnlocked();
+
       history.forEach((item) => {
         const historyItem = document.createElement('div');
-        const content = document.createElement('div');
-        const title = document.createElement('strong');
-        const meta = document.createElement('span');
-        const pill = document.createElement('span');
-
         historyItem.className = 'history-item';
-        pill.className = 'pill';
-        title.textContent = `Acidente registrado em ${formatDate(item.date)}`;
-        meta.textContent = `Lançamento feito em ${new Date(item.recordedAt).toLocaleString('pt-BR')}`;
-        pill.textContent = 'Contagem reiniciada';
 
-        content.append(title, meta);
-        historyItem.append(content, pill);
+        if (editingHistoryId === item.id) {
+          const content = document.createElement('div');
+          content.className = 'history-item-edit';
+
+          const title = document.createElement('strong');
+          title.textContent = 'Editar data:';
+
+          const dateInput = document.createElement('input');
+          dateInput.type = 'date';
+          dateInput.value = item.date;
+          dateInput.max = getTodayISO();
+
+          content.append(title, dateInput);
+
+          const actions = document.createElement('div');
+          actions.className = 'history-item-actions';
+
+          const saveBtn = document.createElement('button');
+          saveBtn.className = 'btn small';
+          saveBtn.type = 'button';
+          saveBtn.textContent = 'Salvar';
+          saveBtn.addEventListener('click', () => saveHistoryItemEdit(item.id, dateInput.value));
+
+          const cancelBtn = document.createElement('button');
+          cancelBtn.className = 'btn secondary small';
+          cancelBtn.type = 'button';
+          cancelBtn.textContent = 'Cancelar';
+          cancelBtn.addEventListener('click', () => {
+            editingHistoryId = null;
+            render();
+          });
+
+          actions.append(saveBtn, cancelBtn);
+          historyItem.append(content, actions);
+        } else {
+          const content = document.createElement('div');
+          const title = document.createElement('strong');
+          const meta = document.createElement('span');
+
+          title.textContent = `Acidente registrado em ${formatDate(item.date)}`;
+          meta.textContent = `Lançamento feito em ${new Date(item.recordedAt).toLocaleString('pt-BR')}`;
+          content.append(title, meta);
+
+          const actions = document.createElement('div');
+          actions.className = 'history-item-actions';
+
+          const pill = document.createElement('span');
+          pill.className = 'pill';
+          pill.textContent = 'Contagem reiniciada';
+
+          const editBtn = document.createElement('button');
+          editBtn.className = 'btn secondary small';
+          editBtn.type = 'button';
+          editBtn.textContent = 'Editar';
+          editBtn.disabled = !adminUnlocked;
+          editBtn.addEventListener('click', async () => {
+            if (!await requireAdmin()) return;
+            editingHistoryId = item.id;
+            render();
+          });
+
+          const deleteBtn = document.createElement('button');
+          deleteBtn.className = 'btn danger small';
+          deleteBtn.type = 'button';
+          deleteBtn.textContent = 'Excluir';
+          deleteBtn.disabled = !adminUnlocked;
+          deleteBtn.addEventListener('click', () => deleteHistoryItem(item.id));
+
+          actions.append(pill, editBtn, deleteBtn);
+          historyItem.append(content, actions);
+        }
+
         elements.historyList.append(historyItem);
       });
+    }
+
+    async function saveHistoryItemEdit(id, newDate) {
+      if (!await requireAdmin()) return;
+
+      if (!isValidISODate(newDate) || newDate > getTodayISO()) {
+        alert('Data invalida.');
+        return;
+      }
+
+      const history = loadHistory();
+      const index = history.findIndex((item) => item.id === id);
+
+      if (index !== -1) {
+        history[index] = { ...history[index], date: newDate };
+        saveHistory(history);
+      }
+
+      editingHistoryId = null;
+      render();
+    }
+
+    async function deleteHistoryItem(id) {
+      if (!await requireAdmin()) return;
+      if (!confirm('Excluir este registro do historico? Essa acao nao pode ser desfeita.')) return;
+
+      saveHistory(loadHistory().filter((item) => item.id !== id));
+
+      if (editingHistoryId === id) editingHistoryId = null;
+      render();
     }
 
     function render() {
@@ -1244,6 +1366,7 @@
 
       if (confirm('Deseja limpar todo o histórico de acidentes?')) {
         saveHistory([]);
+        editingHistoryId = null;
         render();
       }
     });
