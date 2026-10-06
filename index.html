@@ -741,6 +741,7 @@
         <button class="btn secondary" type="button" id="darkModeBtn">Modo escuro</button>
         <button class="btn secondary" type="button" id="tvModeBtn">Painel TV</button>
         <button class="btn secondary" type="button" id="printBtn">Exportar PDF</button>
+        <button class="btn secondary" type="button" id="exportDataBtn">Exportar dados (JSON)</button>
         <button class="btn secondary" type="button" id="adminBtn">Entrar admin</button>
       </div>
     </header>
@@ -782,6 +783,8 @@
 
         <button class="btn" type="button" id="saveSettingsBtn">Salvar configurações</button>
         <button class="btn danger" type="button" id="registerAccidentBtn">Registrar Acidente</button>
+        <button class="btn secondary" type="button" id="importDataBtn">Importar dados (JSON)</button>
+        <input type="file" id="importDataInput" accept="application/json" style="display: none" />
 
         <div class="progress-wrap">
           <div class="progress-top">
@@ -874,6 +877,7 @@
       document.getElementById('saveSettingsBtn'),
       document.getElementById('registerAccidentBtn'),
       document.getElementById('clearHistoryBtn'),
+      document.getElementById('importDataBtn'),
       elements.lastAccidentDate,
       elements.goalDays
     ];
@@ -1197,9 +1201,44 @@
       render();
     }
 
+    function exportData() {
+      const state = getState();
+      const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+
+      link.href = url;
+      link.download = `dias-sem-acidente-backup-${getTodayISO()}.json`;
+      link.click();
+
+      URL.revokeObjectURL(url);
+    }
+
+    async function importData(file) {
+      let parsed;
+
+      try {
+        parsed = JSON.parse(await file.text());
+      } catch (error) {
+        alert('Arquivo invalido: nao foi possivel ler o JSON.');
+        return;
+      }
+
+      if (!parsed || typeof parsed !== 'object' || !parsed.config) {
+        alert('Arquivo invalido: formato de backup nao reconhecido.');
+        return;
+      }
+
+      if (!confirm('Importar este arquivo vai substituir a configuracao e o historico atuais. Continuar?')) return;
+
+      applyState(parsed);
+      saveRemoteState();
+    }
+
     document.getElementById('saveSettingsBtn').addEventListener('click', updateSettings);
     document.getElementById('registerAccidentBtn').addEventListener('click', registerAccident);
     document.getElementById('printBtn').addEventListener('click', () => window.print());
+    document.getElementById('exportDataBtn').addEventListener('click', exportData);
     document.getElementById('clearHistoryBtn').addEventListener('click', async () => {
       if (!await requireAdmin()) return;
 
@@ -1207,6 +1246,17 @@
         saveHistory([]);
         render();
       }
+    });
+
+    const importDataInput = document.getElementById('importDataInput');
+    document.getElementById('importDataBtn').addEventListener('click', async () => {
+      if (!await requireAdmin()) return;
+      importDataInput.click();
+    });
+    importDataInput.addEventListener('change', async () => {
+      const file = importDataInput.files[0];
+      importDataInput.value = '';
+      if (file) await importData(file);
     });
 
     elements.adminBtn.addEventListener('click', unlockAdmin);
